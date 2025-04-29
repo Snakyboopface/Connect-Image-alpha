@@ -1,7 +1,7 @@
 bl_info = {
     'name': 'Connect Alpha',
     'author': 'Snakyboopface',
-    'version': (0, 0, 4),
+    'version': (0, 0, 6),
     'blender': (4, 3, 2),
     'location': '3D Viewport > Sidebar > Connect Alpha',
     'description': 'Connect image alpha',
@@ -10,14 +10,57 @@ bl_info = {
 
 import bpy
 
-def connect_alpha(coll):
-        '''
-        Connects image alpha to principled BSDF
-        :param: collection
-        '''
+# Functions
+def set_name_prio(sep_alph: str, incl_alph: str, bsdf: str)-> list:
+    '''
+    Converts name priority str to list
 
-        # Prioritise connecting ALPHA of ndoes with labels in node_priority
-        node_priority = ['alpha', ['base color', 'base colour', 'color', 'colour']]
+    prio_list[0] = prioritises connecting nodes with these labels first. Will connect the "color" output to the "alpha" input of the BSDF shader
+    prio_list[1] = prioritises connecting these nodes second. will connect the "alpha" output of these nodes to the "alpha" input of the BSDF shader
+    prio_list[2] = prioritises connecting the image node(s) to BSDF nodes with these labels
+
+    :param: sep_alph
+    if sep_alpha is empty then it will be set to 'alpha' if incl_alph doesn't have 'alpha' 
+
+    :param: incl_alph
+    if incl_alpha is empty then it will be set to 'base color, base colour, color, colour'
+
+    :param: bsdf
+    if bsdf is empty then it will be set to 'main'
+
+    :return: prio_list
+    '''
+
+    prio_list = []
+
+    # If any parts are empty or just space then set them to these defults
+    if sep_alph.strip() == '' and 'alpha' not in incl_alph.lower():
+        sep_alph = 'alpha'
+
+    if incl_alph.strip() == '':
+        incl_alph = 'base color, base colour, color, colour'
+
+    """if bsdf.strip() == '':
+        bsdf = 'main'"""
+
+    # Turn strings into lists
+    sep_alph = list(map(str, sep_alph.lower().strip().split(',')))
+    incl_alph = list(map(str, incl_alph.lower().strip().split(',')))
+    bsdf = list(map(str, bsdf.lower().strip().split(',')))
+
+    # Appends the lists into the full list
+    prio_list.append(sep_alph)
+    prio_list.append(incl_alph)
+    prio_list.append(bsdf)
+
+    return prio_list
+
+def connect_alpha(coll, name_prio: list):
+        '''
+        Connects image alpha output to principled BSDF alpha input
+        :param: collection
+        :param: name_prio
+        '''
 
         # What to connect from the image texture to the shader
         image_out = 'Alpha'
@@ -40,18 +83,21 @@ def connect_alpha(coll):
                             for node in nodes:
                                 if node.type == 'TEX_IMAGE' and node.image is not None:
                                     image_texture_node = node
-
                                     # Checks if the image node is in the priority list
-                                    if node.label.lower() == node_priority[0]:
+                                    if node.label.lower() in name_prio[0]:
                                         image_out = 'Color'
                                         break
 
-                                    elif node.label.lower() in node_priority[1]:
+                                    elif node.label.lower() in name_prio[1]:
                                         break
-                                    
+                                        
+                            for node in nodes:
                                 if node.type == 'BSDF_PRINCIPLED':
                                     principled_bsdf_node = node
-                            
+                                    # Checks if the BSDF node is in the priority list
+                                    if node.label.lower() in name_prio[2]:
+                                        break
+                                    
                             # Ensure both nodes exist
                             if image_texture_node and principled_bsdf_node:
                                 # Check if Alpha is not already connected
@@ -67,7 +113,8 @@ def connect_alpha(coll):
                                     links.new(image_texture_node.outputs[image_out], principled_bsdf_node.inputs['Alpha'])
 
 
-class CollectionsMenu(bpy.types.PropertyGroup):
+# Properties
+class Props(bpy.types.PropertyGroup):
     '''Menu of collections'''
 
     coll_list : bpy.props.PointerProperty(
@@ -75,7 +122,28 @@ class CollectionsMenu(bpy.types.PropertyGroup):
         description= 'Select a collection',
         type=bpy.types.Collection
         )
+
+    sep_alph_prio : bpy.props.StringProperty(
+        name= 'Alpha image name',
+        description= 'Prioritise connecting image nodes with these labels.' \
+        '\nWill connect the "Colour" output of the image to the "Alpha" of the BSDF' \
+        '\nSeperate by comma ","'
+        )
     
+    incl_alph_prio : bpy.props.StringProperty(
+        name= 'Image name',
+        description= 'Prioritise connecting image nodes with these labels.' \
+        '\nWill connect the "Alpha" output of the image to the "Alpha" of the BSDF' \
+        '\nSeperate by comma ","'
+        )
+    
+    bsdf_prio :  bpy.props.StringProperty(
+        name= 'BSDF name',
+        description= 'Prioritise connecting to BSDF nodes with these labels.' \
+        '\nSeperate by comma ","'
+        )
+    
+# Operators
 class NODE_OT_connect_alpha(bpy.types.Operator):
     '''
     Connects the alpha of image textures in selected collection to the principled bsdf node
@@ -86,11 +154,16 @@ class NODE_OT_connect_alpha(bpy.types.Operator):
     # Connect alpha function
     def execute(self, context):
         scene = bpy.context.scene
-        listtool = scene.list_tool
-        connect_alpha(listtool.coll_list)
+        propstool = scene.props_tool
+        
+        prio_name = set_name_prio(propstool.sep_alph_prio, propstool.incl_alph_prio, propstool.bsdf_prio)
+
+        connect_alpha(propstool.coll_list, prio_name)
     
         return {"FINISHED"}
 
+
+# Panel
 class VIEW3D_PT_connect_alpha(bpy.types.Panel):
     '''ui panel'''
     # Where to add panel in the UI
@@ -105,10 +178,18 @@ class VIEW3D_PT_connect_alpha(bpy.types.Panel):
         '''Define the layout of the panel'''
         layout = self.layout
         scene = context.scene
-        listtool = scene.list_tool
+        propstool = scene.props_tool
         row = layout.row()
 
-        layout.prop(listtool, 'coll_list')
+        layout.label(text= 'Priority labels:')
+
+        layout.prop(propstool, 'sep_alph_prio')
+        layout.prop(propstool, 'incl_alph_prio')
+        layout.prop(propstool, 'bsdf_prio')
+
+        layout.separator()
+
+        layout.prop(propstool, 'coll_list')
 
         # Adds a seperator
         layout.separator()
@@ -117,21 +198,22 @@ class VIEW3D_PT_connect_alpha(bpy.types.Panel):
         row.operator('node.connect_alpha', text= 'Connect Alpha')
 
 
-CLASSES = [CollectionsMenu, NODE_OT_connect_alpha, VIEW3D_PT_connect_alpha]
+# Registering/Unregistering
+CLASSES = [Props, NODE_OT_connect_alpha, VIEW3D_PT_connect_alpha]
 
 # Register the panel with blender
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
 
-        bpy.types.Scene.list_tool = bpy.props.PointerProperty(type= CollectionsMenu)
+        bpy.types.Scene.props_tool = bpy.props.PointerProperty(type= Props)
 
 
 def unregister():
     for cls in CLASSES:
         bpy.utils.unregister_class(cls)
 
-        del bpy.types.Scene.list_tool
+        del bpy.types.Scene.props_tool
 
 
 if __name__ == '__main__':
